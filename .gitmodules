@@ -1,0 +1,3 @@
+[submodule "function-selector-miner-cuda"]
+	path = function-selector-miner-cuda
+	url = https://github.com/ygtdmn/function-selector-miner-cuda
