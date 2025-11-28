@@ -5,10 +5,14 @@
     "compiler-version": ["error", ">=0.8.30"],
     "func-name-mixedcase": "off",
     "func-visibility": ["error", { "ignoreConstructors": true }],
-    "max-line-length": ["error", 120],
+    "import-path-check": "off",
+    "gas-small-strings": "off",
+    "max-line-length": "off",
+    "gas-indexed-events": "off",
     "named-parameters-mapping": "warn",
     "no-console": "off",
     "not-rely-on-time": "off",
-    "one-contract-per-file": "off"
+    "one-contract-per-file": "off",
+    "use-natspec": "off"
   }
 }

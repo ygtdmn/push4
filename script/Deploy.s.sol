@@ -6,10 +6,9 @@ import { PUSH4 } from "../src/PUSH4.sol";
 import { PUSH4Core } from "../src/PUSH4Core.sol";
 import { PUSH4Renderer } from "../src/PUSH4Renderer.sol";
 import { ICreateX } from "./interfaces/ICreateX.sol";
-import { console2 } from "forge-std/console2.sol";
 
 contract Deploy is BaseScript {
-    ICreateX constant CREATEX_FACTORY = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
+    ICreateX public constant CREATEX_FACTORY = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
 
     function run() public broadcast returns (PUSH4Renderer renderer, PUSH4Core push4Core, PUSH4 push4) {
         // Generate deterministic salts for each contract

@@ -4,8 +4,10 @@ cache
 coverage
 node_modules
 out
+test/llm-tests
 
 # files
+src/interface/Sculpture.sol
 *.env
 *.log
 .DS_Store
