@@ -4,6 +4,10 @@ pragma solidity >=0.8.30;
 import { PUSH4 } from "./PUSH4.sol";
 import { PUSH4Core } from "./PUSH4Core.sol";
 
+/**
+ * @title PUSH4ProxyTemplate
+ * @author Yigit Duman
+ */
 contract PUSH4ProxyTemplate {
     PUSH4 public push4;
     PUSH4Core public push4core;

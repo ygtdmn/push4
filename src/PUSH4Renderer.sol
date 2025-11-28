@@ -7,6 +7,10 @@ import { LibString } from "solady/utils/LibString.sol";
 import { IPUSH4Core } from "./interface/IPUSH4Core.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
+/**
+ * @title PUSH4Renderer
+ * @author Yigit Duman
+ */
 contract PUSH4Renderer is IPUSH4Renderer, Ownable {
     IPUSH4Core public push4Core;
 

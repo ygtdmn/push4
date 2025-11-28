@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.30;
 
+/**
+ * @title PUSH4
+ * @author Yigit Duman
+ */
 contract PUSH4 {
     /* 0x4f302900 */
     function f5890476424() external view returns (bytes4) {

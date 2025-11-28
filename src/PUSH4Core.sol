@@ -8,6 +8,10 @@ import { Sculpture } from "./interface/Sculpture.sol";
 import { LibString } from "solady/utils/LibString.sol";
 import { IPUSH4Core } from "./interface/IPUSH4Core.sol";
 
+/**
+ * @title PUSH4Core
+ * @author Yigit Duman
+ */
 contract PUSH4Core is Sculpture, ERC721, Ownable, IPUSH4Core {
     uint256 public constant TOKEN_ID = 0;
 
