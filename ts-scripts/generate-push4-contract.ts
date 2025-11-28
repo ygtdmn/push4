@@ -407,6 +407,10 @@ function generateContractCode(
   return `// SPDX-License-Identifier: MIT
 pragma solidity >=0.8.30;
 
+/**
+ * @title PUSH4
+ * @author Yigit Duman
+ */
 contract PUSH4 {
 ${functionCode}
 
