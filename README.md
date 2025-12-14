@@ -42,15 +42,25 @@ On-chain SVG renderer that:
 - Sorts pixels by column index (last byte)
 - Generates SVG image and metadata data URIs
 
+### PUSH4RendererRouter.sol
+
+A router contract that delegates rendering to another renderer contract. This allows changing the underlying renderer
+without the 60-day grace period limit imposed by PUSH4Core. Features:
+
+- **setRenderer**: Change the underlying renderer at any time (owner only)
+- **lockRenderer**: Permanently lock the renderer, preventing future changes (irreversible)
+- All IPUSH4Renderer functions pass through to the underlying renderer
+
 ## Deployed Addresses
 
 Both Sepolia and Mainnet:
 
-| Contract      | Address                                      |
-| ------------- | -------------------------------------------- |
-| PUSH4         | `0x000000630bf663df3ff850DD34a28Fb7D4d52170` |
-| PUSH4Core     | `0x00000063266aAAeDD489e4956153855626E44061` |
-| PUSH4Renderer | `0x00000063Bbe182593913e09b8A481D58ADc31042` |
+| Contract               | Address                                      |
+| ---------------------- | -------------------------------------------- |
+| PUSH4                  | `0x000000630bf663df3ff850DD34a28Fb7D4d52170` |
+| PUSH4Core              | `0x00000063266aAAeDD489e4956153855626E44061` |
+| PUSH4Renderer (Legacy) | `0x00000063Bbe182593913e09b8A481D58ADc31042` |
+| PUSH4RendererRouter    | `0x000000636fac63f4f4c12c8674fb5d11f9a08753` |
 
 ## How It Works
 
