@@ -1,0 +1,308 @@
+<!doctype html>
+<html>
+  <head>
+    <meta name="title" content="PUSH4" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+      #artwork {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #artwork img,
+      #artwork iframe {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+      }
+      #info {
+        position: fixed;
+        bottom: 10px;
+        left: 10px;
+        color: #fff;
+        font-family: monospace;
+        font-size: 12px;
+        opacity: 0.7;
+        z-index: 1000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="artwork"><div id="loading">Loading...</div></div>
+    <div id="info">
+      <span id="title">--</span> by <span id="creator">--</span> | <span id="proxy">--</span> |
+      <span id="next">Next in: --</span>
+    </div>
+    <script>
+      // Injected values (replaced at runtime by the contract)
+      const RPC_URLS = [{{FILE_URIS}}];
+      const BLOCK_INTERVAL = {{BLOCK_INTERVAL}};
+      const CONTRACT_ADDRESS = '{{CORE_ADDRESS}}';
+      const TOKEN_ID = {{TOKEN_ID}};
+
+      let currentRpcIndex = 0;
+      let lastBlock = 0;
+      let lastProxyIdx = -1;
+      let proxyAddress = null;
+      let proxyCount = 0;
+
+      async function fetchWithFallback(method, params) {
+          const errors = [];
+          for (let i = 0; i < RPC_URLS.length; i++) {
+              const idx = (currentRpcIndex + i) % RPC_URLS.length;
+              const rpcUrl = RPC_URLS[idx];
+              try {
+                  const res = await fetch(rpcUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params })
+                  });
+                  if (!res.ok) {
+                      const err = `HTTP ${res.status}: ${res.statusText}`;
+                      errors.push({ rpc: rpcUrl, error: err });
+                      continue;
+                  }
+                  // Use text() first to avoid JSON parse errors on large responses
+                  const text = await res.text();
+                  let json;
+                  try {
+                      json = JSON.parse(text);
+                  } catch (parseErr) {
+                      const err = `JSON parse error: ${parseErr.message} (response length: ${text.length})`;
+                      errors.push({ rpc: rpcUrl, error: err });
+                      continue;
+                  }
+                  if (json.error) {
+                      const err = `RPC error: ${JSON.stringify(json.error)}`;
+                      errors.push({ rpc: rpcUrl, error: err });
+                      continue;
+                  }
+                  currentRpcIndex = idx;
+                  return json.result;
+              } catch (e) {
+                  const err = e.message || String(e);
+                  errors.push({ rpc: rpcUrl, error: err });
+                  continue;
+              }
+          }
+          console.error('[RPC] All RPCs failed:', errors);
+          throw new Error('All RPCs failed: ' + JSON.stringify(errors));
+      }
+
+      async function getBlockNumber() {
+          const hex = await fetchWithFallback('eth_blockNumber', []);
+          const blockNum = parseInt(hex, 16);
+          return blockNum;
+      }
+
+      // Discover the proxy address from PUSH4Core.proxy()
+      async function discoverProxy() {
+          // proxy() selector: 0xec556889
+          const data = '0xec556889';
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: CONTRACT_ADDRESS, data: data }, 'latest']);
+              // Result is an address (32 bytes, right-padded)
+              const addr = '0x' + res.slice(26, 66);
+              if (addr === '0x0000000000000000000000000000000000000000') {
+                  return null;
+              }
+              return addr;
+          } catch (e) {
+              console.error('[Proxy] Failed to discover proxy:', e);
+              return null;
+          }
+      }
+
+      // Get proxy count from orchestrator.proxyCount()
+      async function getProxyCount(orchestratorAddr) {
+          if (!orchestratorAddr) {
+              return 0;
+          }
+          // proxyCount() selector: 0x37c954d8
+          const data = '0x37c954d8';
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: orchestratorAddr, data: data }, 'latest']);
+              const count = parseInt(res, 16);
+              return count;
+          } catch (e) {
+              console.error('[ProxyCount] Failed to get proxy count:', e);
+              return 0;
+          }
+      }
+
+      // Get proxy at index from orchestrator.getProxyAt(uint256)
+      async function getProxyAt(orchestratorAddr, index) {
+          if (!orchestratorAddr) return null;
+          // getProxyAt(uint256) selector: 0xcc935efe
+          const data = '0xcc935efe' + index.toString(16).padStart(64, '0');
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: orchestratorAddr, data: data }, 'latest']);
+              const addr = '0x' + res.slice(26, 66);
+              return addr;
+          } catch (e) {
+              console.error('[ProxyAt] Failed to get proxy at index:', e);
+              return null;
+          }
+      }
+
+      // Decode a string from ABI-encoded response
+      function decodeString(hex) {
+          const data = hex.slice(2);
+          const offset = parseInt(data.slice(0, 64), 16) * 2;
+          const len = parseInt(data.slice(offset, offset + 64), 16) * 2;
+          const strHex = data.slice(offset + 64, offset + 64 + len);
+          return strHex.match(/.{2}/g).map(x => String.fromCharCode(parseInt(x, 16))).join('');
+      }
+
+      // Get title from proxy.title()
+      async function getProxyTitle(proxyAddr) {
+          if (!proxyAddr) return '--';
+          // title() selector: 0x4a79d50c
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: proxyAddr, data: '0x4a79d50c' }, 'latest']);
+              const title = decodeString(res);
+              return title;
+          } catch (e) {
+              console.error('[ProxyTitle] Failed to get title:', e);
+              return '--';
+          }
+      }
+
+      // Get creator from proxy.creator() - returns (string name, address wallet)
+      async function getProxyCreator(proxyAddr) {
+          if (!proxyAddr) return '--';
+          // creator() selector: 0x02d05d3f
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: proxyAddr, data: '0x02d05d3f' }, 'latest']);
+              // Creator struct: (string name, address wallet)
+              // First 32 bytes: offset to tuple, then offset to string, then address (right-padded)
+              const data = res.slice(2);
+              // Offset to the struct
+              const structOffset = parseInt(data.slice(0, 64), 16) * 2;
+              // At structOffset: offset to name string (relative to struct start)
+              const nameOffsetRel = parseInt(data.slice(structOffset, structOffset + 64), 16) * 2;
+              // Name string is at structOffset + nameOffsetRel
+              const nameStart = structOffset + nameOffsetRel;
+              const nameLen = parseInt(data.slice(nameStart, nameStart + 64), 16) * 2;
+              const nameHex = data.slice(nameStart + 64, nameStart + 64 + nameLen);
+              const name = nameHex.match(/.{2}/g).map(x => String.fromCharCode(parseInt(x, 16))).join('');
+              return name;
+          } catch (e) {
+              console.error('[ProxyCreator] Failed to get creator:', e);
+              return '--';
+          }
+      }
+
+      async function getTokenURI() {
+          // tokenURI(uint256) selector: 0xc87b56dd
+          const data = '0xc87b56dd' + TOKEN_ID.toString(16).padStart(64, '0');
+          const res = await fetchWithFallback('eth_call', [{ to: CONTRACT_ADDRESS, data: data }, 'latest']);
+          const hex = res.slice(2);
+          const offset = parseInt(hex.slice(0, 64), 16) * 2;
+          const len = parseInt(hex.slice(offset, offset + 64), 16) * 2;
+          const uri = hex.slice(offset + 64, offset + 64 + len);
+          const decoded = decodeURIComponent(uri.match(/.{2}/g).map(x => String.fromCharCode(parseInt(x, 16))).join(''));
+          return decoded;
+      }
+
+      async function updateArtwork() {
+          try {
+              const uri = await getTokenURI();
+              const artwork = document.getElementById('artwork');
+              if (uri.startsWith('data:application/json')) {
+                  const jsonStr = uri.includes('base64,')
+                      ? atob(uri.split('base64,')[1])
+                      : decodeURIComponent(uri.split(',')[1]);
+                  const meta = JSON.parse(jsonStr);
+                  // Always render the image (SVG), never animation_url to avoid infinite iframe loop
+                  if (meta.image) {
+                      artwork.innerHTML = '<img src="' + meta.image + '" alt="PUSH4">';
+                  }
+              }
+          } catch (e) {
+              console.error('[Artwork] Update failed:', e);
+              console.error('[Artwork] Stack:', e.stack);
+          }
+      }
+
+      async function pollBlock() {
+          try {
+              const block = await getBlockNumber();
+
+              const elapsed = block % BLOCK_INTERVAL;
+              const remaining = BLOCK_INTERVAL - elapsed;
+              document.getElementById('next').textContent = 'Next in: ' + remaining + ' blocks';
+
+              const proxyIdx = proxyCount > 0 ? Math.floor(block / BLOCK_INTERVAL) % proxyCount : 0;
+              document.getElementById('proxy').textContent = (proxyIdx + 1) + '/' + proxyCount;
+
+              if (block !== lastBlock) {
+                  lastBlock = block;
+                  if (proxyIdx !== lastProxyIdx) {
+                      lastProxyIdx = proxyIdx;
+
+                      // Get the current proxy and update title/creator
+                      const currentProxy = await getProxyAt(proxyAddress, proxyIdx);
+                      if (currentProxy) {
+                          const [title, creator] = await Promise.all([
+                              getProxyTitle(currentProxy),
+                              getProxyCreator(currentProxy)
+                          ]);
+                          document.getElementById('title').textContent = title;
+                          document.getElementById('creator').textContent = creator;
+                      }
+
+                      await updateArtwork();
+                  }
+              }
+          } catch (e) {
+              console.error('[Poll] Poll failed:', e);
+          }
+      }
+
+      async function init() {
+          // Discover proxy and get count
+          proxyAddress = await discoverProxy();
+          proxyCount = await getProxyCount(proxyAddress);
+
+          // Get initial proxy index and fetch title/creator
+          const block = await getBlockNumber();
+          const proxyIdx = proxyCount > 0 ? Math.floor(block / BLOCK_INTERVAL) % proxyCount : 0;
+          lastProxyIdx = proxyIdx;
+          const currentProxy = await getProxyAt(proxyAddress, proxyIdx);
+          if (currentProxy) {
+              const [title, creator] = await Promise.all([
+                  getProxyTitle(currentProxy),
+                  getProxyCreator(currentProxy)
+              ]);
+              document.getElementById('title').textContent = title;
+              document.getElementById('creator').textContent = creator;
+          }
+
+          // Initial render
+          await updateArtwork();
+          await pollBlock();
+
+          // Start polling
+          setInterval(pollBlock, 3000);
+      }
+
+      init().catch(e => console.error('[Init] Fatal error:', e));
+    </script>
+  </body>
+</html>

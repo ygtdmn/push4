@@ -62,6 +62,16 @@ Both Sepolia and Mainnet:
 | PUSH4Renderer (Legacy) | `0x00000063Bbe182593913e09b8A481D58ADc31042` |
 | PUSH4RendererRouter    | `0x000000636fac63f4f4c12c8674fb5d11f9a08753` |
 
+Mainnet (V2):
+
+| Contract               | Address                                      |
+| ---------------------- | -------------------------------------------- |
+| PUSH4ProxyFactory      | `0x996815bc3a8eb22ab254f2709b414b39a51e729e` |
+| PUSH4RendererV2        | `0x9f6bf49c22714058dbb3f1b6a09ce6b28c8cc031` |
+| PUSH4OrchestratorProxy | `0xee7e4505828cbeb285cb78fd3daa4cf2caf587f3` |
+| PUSH4MURIOperator      | `0xa42026ac5a6b0a55329e5f33e8a457460c4cf2c5` |
+| PUSH4OriginalProxy     | `0xa797bb4f941fefab51b7307ba09a566082903570` |
+
 ## How It Works
 
 ### 1. Image Generation
