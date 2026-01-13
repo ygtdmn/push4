@@ -15,7 +15,7 @@ script = "script"
 solc = "0.8.30"
 src = "src"
 test = "test"
-fs_permissions = [{ access = "read", path = "./" }]
+fs_permissions = [{ access = "read", path = "./" }, { access = "read-write", path = "./svgs" }]
 
 [profile.ci]
 fuzz = { runs = 1_000_000 }

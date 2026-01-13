@@ -22,3 +22,6 @@ broadcast/*/31337/
 # data
 ts-scripts/data/mined-selectors-db.json
 ts-scripts/data/selector-mining-progress.json
+
+svgs/
+svgs-backup/
