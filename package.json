@@ -25,6 +25,5 @@
     "generate:image": "bun run ts-scripts/generate-image.ts",
     "generate:contract": "bun run ts-scripts/generate-push4-contract.ts",
     "verify:selectors": "bun run ts-scripts/verify-selectors.ts"
-  },
-  "packageManager": "pnpm@10.11.1+sha512.e519b9f7639869dc8d5c3c5dfef73b3f091094b0a006d7317353c72b124e80e1afd429732e28705ad6bfa1ee879c1fce46c128ccebd3192101f43dd67c667912"
+  }
 }
