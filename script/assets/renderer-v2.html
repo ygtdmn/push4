@@ -15,51 +15,76 @@
         width: 100%;
         height: 100%;
         overflow: hidden;
-        background: #000;
       }
       #artwork {
         width: 100%;
-        height: 100%;
+        height: calc(100% - 30px);
         display: flex;
-        align-items: center;
-        justify-content: center;
+        align-items: flex-start;
+        justify-content: flex-start;
       }
       #artwork img,
       #artwork iframe {
+        height: 100%;
+        width: auto;
         max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
+        image-rendering: pixelated;
       }
       #info {
-        position: fixed;
-        bottom: 10px;
-        left: 10px;
-        color: #fff;
+        height: 30px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 5px;
+      }
+      #info-text {
+        display: flex;
+        justify-content: space-between;
+        padding: 0 0 6px;
         font-family: monospace;
-        font-size: 12px;
-        opacity: 0.7;
-        z-index: 1000;
+        font-size: 11px;
+        color: #666;
+        letter-spacing: 0.3px;
+      }
+      #progress-bar {
+        height: 2px;
+        background: #222;
+      }
+      #progress {
+        height: 100%;
+        background: #555;
+        width: 0%;
       }
     </style>
   </head>
   <body>
     <div id="artwork"><div id="loading">Loading...</div></div>
     <div id="info">
-      <span id="title">--</span> by <span id="creator">--</span> | <span id="proxy">--</span> |
-      <span id="next">Next in: --</span>
+      <div id="info-text">
+        <span><span id="title">--</span> by <span id="creator">--</span></span>
+        <span id="proxy">--</span>
+      </div>
+      <div id="progress-bar"><div id="progress"></div></div>
     </div>
     <script>
       // Injected values (replaced at runtime by the contract)
       const RPC_URLS = [{{FILE_URIS}}];
       const BLOCK_INTERVAL = {{BLOCK_INTERVAL}};
       const CONTRACT_ADDRESS = '{{CORE_ADDRESS}}';
-      const TOKEN_ID = {{TOKEN_ID}};
+      const GAS_LIMIT = '0x20C85580';
 
       let currentRpcIndex = 0;
       let lastBlock = 0;
       let lastProxyIdx = -1;
       let proxyAddress = null;
       let proxyCount = 0;
+      let rendererAddress = null;
+
+      function showError(msg) {
+          const artwork = document.getElementById('artwork');
+          // Simple error styling, centering it in the container
+          artwork.innerHTML = '<div style="color: #ff5555; font-family: monospace; padding: 20px; text-align: center;">' + msg + '</div>';
+      }
 
       async function fetchWithFallback(method, params) {
           const errors = [];
@@ -101,6 +126,7 @@
               }
           }
           console.error('[RPC] All RPCs failed:', errors);
+          showError('Connection Error: All RPC nodes are unresponsive.');
           throw new Error('All RPCs failed: ' + JSON.stringify(errors));
       }
 
@@ -208,66 +234,75 @@
           }
       }
 
-      async function getTokenURI() {
-          // tokenURI(uint256) selector: 0xc87b56dd
-          const data = '0xc87b56dd' + TOKEN_ID.toString(16).padStart(64, '0');
-          const res = await fetchWithFallback('eth_call', [{ to: CONTRACT_ADDRESS, data: data }, 'latest']);
-          const hex = res.slice(2);
-          const offset = parseInt(hex.slice(0, 64), 16) * 2;
-          const len = parseInt(hex.slice(offset, offset + 64), 16) * 2;
-          const uri = hex.slice(offset + 64, offset + 64 + len);
-          const decoded = decodeURIComponent(uri.match(/.{2}/g).map(x => String.fromCharCode(parseInt(x, 16))).join(''));
-          return decoded;
+      // Discover the renderer address from PUSH4Core.renderer()
+      async function discoverRenderer() {
+          // renderer() selector: 0x8ada6b0f
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: CONTRACT_ADDRESS, data: '0x8ada6b0f' }, 'latest']);
+              return '0x' + res.slice(26, 66);
+          } catch (e) {
+              console.error('[Renderer] Failed to discover renderer:', e);
+              return null;
+          }
       }
 
-      async function updateArtwork() {
-          try {
-              const uri = await getTokenURI();
-              const artwork = document.getElementById('artwork');
-              if (uri.startsWith('data:application/json')) {
-                  const jsonStr = uri.includes('base64,')
-                      ? atob(uri.split('base64,')[1])
-                      : decodeURIComponent(uri.split(',')[1]);
-                  const meta = JSON.parse(jsonStr);
-                  // Always render the image (SVG), never animation_url to avoid infinite iframe loop
-                  if (meta.image) {
-                      artwork.innerHTML = '<img src="' + meta.image + '" alt="PUSH4">';
-                  }
-              }
-          } catch (e) {
-              console.error('[Artwork] Update failed:', e);
-              console.error('[Artwork] Stack:', e.stack);
-          }
+      async function getSvgDataUri() {
+          // getSvgDataUri() selector: 0xbfec768f
+          const res = await fetchWithFallback('eth_call', [{ to: rendererAddress, data: '0xbfec768f', gas: GAS_LIMIT }, 'latest']);
+          return decodeString(res);
+      }
+
+      function syncInfoWidth() {
+          const img = document.querySelector('#artwork img');
+          const info = document.getElementById('info');
+          if (img) info.style.width = img.clientWidth + 'px';
+      }
+
+      function renderArtwork(svgDataUri) {
+          const artwork = document.getElementById('artwork');
+          artwork.innerHTML = '<img src="' + svgDataUri + '" alt="PUSH4">';
+          artwork.querySelector('img').onload = syncInfoWidth;
+      }
+
+      function updateProgress(elapsed) {
+          const bar = document.getElementById('progress');
+          const currentPct = (elapsed / BLOCK_INTERVAL) * 100;
+          const nextPct = Math.min(((elapsed + 1) / BLOCK_INTERVAL) * 100, 100);
+          // Jump to current position immediately
+          bar.style.transition = 'none';
+          bar.style.width = currentPct + '%';
+          // Double-rAF ensures the jump is painted before starting the transition
+          requestAnimationFrame(function() {
+              requestAnimationFrame(function() {
+                  bar.style.transition = 'width 12s linear';
+                  bar.style.width = nextPct + '%';
+              });
+          });
       }
 
       async function pollBlock() {
           try {
               const block = await getBlockNumber();
 
-              const elapsed = block % BLOCK_INTERVAL;
-              const remaining = BLOCK_INTERVAL - elapsed;
-              document.getElementById('next').textContent = 'Next in: ' + remaining + ' blocks';
-
               const proxyIdx = proxyCount > 0 ? Math.floor(block / BLOCK_INTERVAL) % proxyCount : 0;
               document.getElementById('proxy').textContent = (proxyIdx + 1) + '/' + proxyCount;
 
               if (block !== lastBlock) {
                   lastBlock = block;
+                  updateProgress(block % BLOCK_INTERVAL);
                   if (proxyIdx !== lastProxyIdx) {
                       lastProxyIdx = proxyIdx;
 
-                      // Get the current proxy and update title/creator
+                      // Get the current proxy, then fetch title/creator/artwork in parallel
                       const currentProxy = await getProxyAt(proxyAddress, proxyIdx);
-                      if (currentProxy) {
-                          const [title, creator] = await Promise.all([
-                              getProxyTitle(currentProxy),
-                              getProxyCreator(currentProxy)
-                          ]);
-                          document.getElementById('title').textContent = title;
-                          document.getElementById('creator').textContent = creator;
-                      }
-
-                      await updateArtwork();
+                      const [title, creator, svgDataUri] = await Promise.all([
+                          getProxyTitle(currentProxy),
+                          getProxyCreator(currentProxy),
+                          getSvgDataUri()
+                      ]);
+                      document.getElementById('title').textContent = title;
+                      document.getElementById('creator').textContent = creator;
+                      renderArtwork(svgDataUri);
                   }
               }
           } catch (e) {
@@ -276,27 +311,29 @@
       }
 
       async function init() {
-          // Discover proxy and get count
-          proxyAddress = await discoverProxy();
+          // Discover proxy, renderer and get count
+          [proxyAddress, rendererAddress] = await Promise.all([
+              discoverProxy(),
+              discoverRenderer()
+          ]);
           proxyCount = await getProxyCount(proxyAddress);
 
-          // Get initial proxy index and fetch title/creator
+          // Get initial proxy index and fetch title/creator/svg in parallel
           const block = await getBlockNumber();
           const proxyIdx = proxyCount > 0 ? Math.floor(block / BLOCK_INTERVAL) % proxyCount : 0;
           lastProxyIdx = proxyIdx;
           const currentProxy = await getProxyAt(proxyAddress, proxyIdx);
-          if (currentProxy) {
-              const [title, creator] = await Promise.all([
-                  getProxyTitle(currentProxy),
-                  getProxyCreator(currentProxy)
-              ]);
-              document.getElementById('title').textContent = title;
-              document.getElementById('creator').textContent = creator;
-          }
-
-          // Initial render
-          await updateArtwork();
-          await pollBlock();
+          const [title, creator, svgDataUri] = await Promise.all([
+              getProxyTitle(currentProxy),
+              getProxyCreator(currentProxy),
+              getSvgDataUri()
+          ]);
+          document.getElementById('title').textContent = title;
+          document.getElementById('creator').textContent = creator;
+          renderArtwork(svgDataUri);
+          lastBlock = block;
+          updateProgress(block % BLOCK_INTERVAL);
+          window.addEventListener('resize', syncInfoWidth);
 
           // Start polling
           setInterval(pollBlock, 3000);
