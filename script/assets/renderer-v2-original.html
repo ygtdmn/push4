@@ -1,0 +1,410 @@
+<!doctype html>
+<html>
+  <head>
+    <meta name="title" content="PUSH4" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: monospace;
+      }
+      #container {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      #artwork {
+        width: 100%;
+        height: calc(100% - 30px);
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+      }
+      #artwork img,
+      #artwork iframe {
+        height: 100%;
+        width: auto;
+        max-width: 100%;
+        image-rendering: pixelated;
+      }
+      #info {
+        height: 30px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 5px;
+        visibility: hidden;
+        opacity: 0;
+        margin: 0 auto;
+      }
+      #info.loaded {
+        visibility: visible;
+        opacity: 1;
+      }
+      #info-text {
+        display: flex;
+        justify-content: space-between;
+        padding: 0 0 6px;
+        font-size: 11px;
+        color: #666;
+        letter-spacing: 0.3px;
+      }
+      #progress-bar {
+        height: 2px;
+        background: #222;
+      }
+      #progress {
+        height: 100%;
+        background: #555;
+        width: 0%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="artwork"><div id="loading">Loading...</div></div>
+      <div id="info">
+        <div id="info-text">
+          <span><span id="title">--</span> by <span id="creator">--</span></span>
+          <span id="proxy">--</span>
+        </div>
+        <div id="progress-bar"><div id="progress"></div></div>
+      </div>
+    </div>
+    <script>
+      // Injected values (replaced at runtime by the contract)
+      const RPC_URLS = [{{FILE_URIS}}];
+      const BLOCK_INTERVAL = {{BLOCK_INTERVAL}};
+      const CONTRACT_ADDRESS = '{{CORE_ADDRESS}}';
+      const GAS_LIMIT = '0x20C85580';
+
+      let currentRpcIndex = 0;
+      let lastBlock = 0;
+      let lastProxyIdx = -1;
+      let proxyAddress = null;
+      let proxyCount = 0;
+      let rendererAddress = null;
+
+      function showError(msg) {
+          const artwork = document.getElementById('artwork');
+          // Simple error styling, centering it in the container
+          artwork.innerHTML = '<div style="color: #ff5555; padding: 20px; text-align: center;">' + msg + '</div>';
+      }
+
+      async function fetchWithFallback(method, params) {
+          const errors = [];
+          for (let i = 0; i < RPC_URLS.length; i++) {
+              const idx = (currentRpcIndex + i) % RPC_URLS.length;
+              const rpcUrl = RPC_URLS[idx];
+              try {
+                  const res = await fetch(rpcUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params })
+                  });
+                  if (!res.ok) {
+                      const err = `HTTP ${res.status}: ${res.statusText}`;
+                      errors.push({ rpc: rpcUrl, error: err });
+                      continue;
+                  }
+                  // Use text() first to avoid JSON parse errors on large responses
+                  const text = await res.text();
+                  let json;
+                  try {
+                      json = JSON.parse(text);
+                  } catch (parseErr) {
+                      const err = `JSON parse error: ${parseErr.message} (response length: ${text.length})`;
+                      errors.push({ rpc: rpcUrl, error: err });
+                      continue;
+                  }
+                  if (json.error) {
+                      const err = `RPC error: ${JSON.stringify(json.error)}`;
+                      errors.push({ rpc: rpcUrl, error: err });
+                      continue;
+                  }
+                  currentRpcIndex = idx;
+                  return json.result;
+              } catch (e) {
+                  const err = e.message || String(e);
+                  errors.push({ rpc: rpcUrl, error: err });
+                  continue;
+              }
+          }
+          console.error('[RPC] All RPCs failed:', errors);
+          showError('Connection Error: All RPC nodes are unresponsive.');
+          throw new Error('All RPCs failed: ' + JSON.stringify(errors));
+      }
+
+      async function getBlockNumber() {
+          const hex = await fetchWithFallback('eth_blockNumber', []);
+          const blockNum = parseInt(hex, 16);
+          return blockNum;
+      }
+
+      // Discover the proxy address from PUSH4Core.proxy()
+      async function discoverProxy() {
+          // proxy() selector: 0xec556889
+          const data = '0xec556889';
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: CONTRACT_ADDRESS, data: data }, 'latest']);
+              // Result is an address (32 bytes, right-padded)
+              const addr = '0x' + res.slice(26, 66);
+              if (addr === '0x0000000000000000000000000000000000000000') {
+                  return null;
+              }
+              return addr;
+          } catch (e) {
+              console.error('[Proxy] Failed to discover proxy:', e);
+              return null;
+          }
+      }
+
+      // Get proxy count from orchestrator.proxyCount()
+      async function getProxyCount(orchestratorAddr) {
+          if (!orchestratorAddr) {
+              return 0;
+          }
+          // proxyCount() selector: 0x37c954d8
+          const data = '0x37c954d8';
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: orchestratorAddr, data: data }, 'latest']);
+              const count = parseInt(res, 16);
+              return count;
+          } catch (e) {
+              console.error('[ProxyCount] Failed to get proxy count:', e);
+              return 0;
+          }
+      }
+
+      // Get proxy at index from orchestrator.getProxyAt(uint256)
+      async function getProxyAt(orchestratorAddr, index) {
+          if (!orchestratorAddr) return null;
+          // getProxyAt(uint256) selector: 0xcc935efe
+          const data = '0xcc935efe' + index.toString(16).padStart(64, '0');
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: orchestratorAddr, data: data }, 'latest']);
+              const addr = '0x' + res.slice(26, 66);
+              return addr;
+          } catch (e) {
+              console.error('[ProxyAt] Failed to get proxy at index:', e);
+              return null;
+          }
+      }
+
+      // Get current proxy from orchestrator.getCurrentProxy() - uses on-chain block
+      async function getCurrentProxy(orchestratorAddr) {
+          if (!orchestratorAddr) return null;
+          // getCurrentProxy() selector: 0x3f2d9d88
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: orchestratorAddr, data: '0x3f2d9d88' }, 'latest']);
+              const addr = '0x' + res.slice(26, 66);
+              return addr;
+          } catch (e) {
+              console.error('[CurrentProxy] Failed to get current proxy:', e);
+              return null;
+          }
+      }
+
+      // Get current proxy index from orchestrator.getCurrentProxyIndex() - uses on-chain block
+      async function getCurrentProxyIndex(orchestratorAddr) {
+          if (!orchestratorAddr) return 0;
+          // getCurrentProxyIndex() selector: 0x81ef9a43
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: orchestratorAddr, data: '0x81ef9a43' }, 'latest']);
+              return parseInt(res, 16);
+          } catch (e) {
+              console.error('[CurrentProxyIndex] Failed to get current proxy index:', e);
+              return 0;
+          }
+      }
+
+      // Decode a string from ABI-encoded response
+      function decodeString(hex) {
+          const data = hex.slice(2);
+          const offset = parseInt(data.slice(0, 64), 16) * 2;
+          const len = parseInt(data.slice(offset, offset + 64), 16) * 2;
+          const strHex = data.slice(offset + 64, offset + 64 + len);
+          return strHex.match(/.{2}/g).map(x => String.fromCharCode(parseInt(x, 16))).join('');
+      }
+
+      // Get title from proxy.title()
+      async function getProxyTitle(proxyAddr) {
+          if (!proxyAddr) return '--';
+          // title() selector: 0x4a79d50c
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: proxyAddr, data: '0x4a79d50c' }, 'latest']);
+              const title = decodeString(res);
+              return title;
+          } catch (e) {
+              console.error('[ProxyTitle] Failed to get title:', e);
+              return '--';
+          }
+      }
+
+      // Get creator from proxy.creator() - returns (string name, address wallet)
+      async function getProxyCreator(proxyAddr) {
+          if (!proxyAddr) return '--';
+          // creator() selector: 0x02d05d3f
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: proxyAddr, data: '0x02d05d3f' }, 'latest']);
+              // Creator struct: (string name, address wallet)
+              // First 32 bytes: offset to tuple, then offset to string, then address (right-padded)
+              const data = res.slice(2);
+              // Offset to the struct
+              const structOffset = parseInt(data.slice(0, 64), 16) * 2;
+              // At structOffset: offset to name string (relative to struct start)
+              const nameOffsetRel = parseInt(data.slice(structOffset, structOffset + 64), 16) * 2;
+              // Name string is at structOffset + nameOffsetRel
+              const nameStart = structOffset + nameOffsetRel;
+              const nameLen = parseInt(data.slice(nameStart, nameStart + 64), 16) * 2;
+              const nameHex = data.slice(nameStart + 64, nameStart + 64 + nameLen);
+              const name = nameHex.match(/.{2}/g).map(x => String.fromCharCode(parseInt(x, 16))).join('');
+              return name;
+          } catch (e) {
+              console.error('[ProxyCreator] Failed to get creator:', e);
+              return '--';
+          }
+      }
+
+      // Discover the renderer address from PUSH4Core.renderer()
+      async function discoverRenderer() {
+          // renderer() selector: 0x8ada6b0f
+          try {
+              const res = await fetchWithFallback('eth_call', [{ to: CONTRACT_ADDRESS, data: '0x8ada6b0f' }, 'latest']);
+              return '0x' + res.slice(26, 66);
+          } catch (e) {
+              console.error('[Renderer] Failed to discover renderer:', e);
+              return null;
+          }
+      }
+
+      async function getSvgDataUri() {
+          // getSvgDataUri() selector: 0xbfec768f
+          const res = await fetchWithFallback('eth_call', [{ to: rendererAddress, data: '0xbfec768f', gas: GAS_LIMIT }, 'latest']);
+          return decodeString(res);
+      }
+
+      function syncInfoWidth() {
+          const img = document.querySelector('#artwork img');
+          const info = document.getElementById('info');
+          if (img) info.style.width = img.clientWidth + 'px';
+      }
+
+      function renderArtwork(svgDataUri) {
+          const artwork = document.getElementById('artwork');
+          artwork.innerHTML = '<img src="' + svgDataUri + '" alt="PUSH4">';
+          artwork.querySelector('img').onload = syncInfoWidth;
+      }
+
+      function updateProgress(elapsed) {
+          const bar = document.getElementById('progress');
+          const currentPct = (elapsed / BLOCK_INTERVAL) * 100;
+          const nextPct = Math.min(((elapsed + 1) / BLOCK_INTERVAL) * 100, 100);
+          // Jump to current position immediately
+          bar.style.transition = 'none';
+          bar.style.width = currentPct + '%';
+          // Double-rAF ensures the jump is painted before starting the transition
+          requestAnimationFrame(function() {
+              requestAnimationFrame(function() {
+                  bar.style.transition = 'width 12s linear';
+                  bar.style.width = nextPct + '%';
+              });
+          });
+      }
+
+      async function pollBlock() {
+          try {
+              const block = await getBlockNumber();
+
+              if (block !== lastBlock) {
+                  const proxyIdx = await getCurrentProxyIndex(proxyAddress);
+
+                  if (proxyIdx !== lastProxyIdx) {
+                      // Get current proxy and fetch all data in parallel
+                      const currentProxy = await getCurrentProxy(proxyAddress);
+                      const [title, creator, svgDataUri] = await Promise.all([
+                          getProxyTitle(currentProxy),
+                          getProxyCreator(currentProxy),
+                          getSvgDataUri()
+                      ]);
+
+                      // Validate all data was fetched successfully before updating anything
+                      if (!title || title === '--' || !creator || creator === '--' || !svgDataUri) {
+                          console.warn('[Poll] Incomplete data, skipping update');
+                          return;
+                      }
+
+                      // All data fetched successfully - now update state and UI together
+                      lastBlock = block;
+                      lastProxyIdx = proxyIdx;
+                      updateProgress(block % BLOCK_INTERVAL);
+                      document.getElementById('title').textContent = title;
+                      document.getElementById('creator').textContent = creator;
+                      document.getElementById('proxy').textContent = (proxyIdx + 1) + '/' + proxyCount;
+                      renderArtwork(svgDataUri);
+                  } else {
+                      // Same proxy, just update block and progress
+                      lastBlock = block;
+                      updateProgress(block % BLOCK_INTERVAL);
+                  }
+              }
+          } catch (e) {
+              // On any error (429, 403, etc.), don't update anything
+              console.error('[Poll] Poll failed, keeping previous state:', e);
+          }
+      }
+
+      async function init() {
+          // Discover proxy, renderer and get count
+          [proxyAddress, rendererAddress] = await Promise.all([
+              discoverProxy(),
+              discoverRenderer()
+          ]);
+          proxyCount = await getProxyCount(proxyAddress);
+
+          // Get current proxy and index from on-chain (guaranteed sync with renderer)
+          const [currentProxy, proxyIdx] = await Promise.all([
+              getCurrentProxy(proxyAddress),
+              getCurrentProxyIndex(proxyAddress)
+          ]);
+          lastProxyIdx = proxyIdx;
+
+          // Fetch all data in parallel
+          const [title, creator, svgDataUri] = await Promise.all([
+              getProxyTitle(currentProxy),
+              getProxyCreator(currentProxy),
+              getSvgDataUri()
+          ]);
+
+          // Get block for progress bar
+          const block = await getBlockNumber();
+          lastBlock = block;
+
+          // Update everything together
+          document.getElementById('title').textContent = title;
+          document.getElementById('creator').textContent = creator;
+          document.getElementById('proxy').textContent = (proxyIdx + 1) + '/' + proxyCount;
+          renderArtwork(svgDataUri);
+          updateProgress(block % BLOCK_INTERVAL);
+          document.getElementById('info').classList.add('loaded');
+          window.addEventListener('resize', syncInfoWidth);
+
+          // Start polling
+          setInterval(pollBlock, 3000);
+      }
+
+      init().catch(e => console.error('[Init] Fatal error:', e));
+    </script>
+  </body>
+</html>
