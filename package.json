@@ -25,5 +25,8 @@
     "generate:image": "bun run ts-scripts/generate-image.ts",
     "generate:contract": "bun run ts-scripts/generate-push4-contract.ts",
     "verify:selectors": "bun run ts-scripts/verify-selectors.ts"
+  },
+  "dependencies": {
+    "html-minifier-terser": "^7.2.0"
   }
 }
